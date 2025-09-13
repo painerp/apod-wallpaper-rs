@@ -1,0 +1,56 @@
+[package]
+name = "apod-wallpaper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.99"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", default-features = false }
+serde_json = "1.0.145"
+dirs = "6.0.0"
+
+# Multiple backends
+serde = { version = "1.0.225", optional = true, features = ["derive"] }
+clap = { version = "4.5.47", optional = true, features = ["derive"] }
+notify-rust = { version = "4.11.7", optional = true, features = ["zbus", "serde"], default-features = false }
+
+# CLI
+reqwest = { version = "0.12.23", optional = true, features = ["json"] }
+chrono = { version = "0.4.42", optional = true, features = ["clock"], default-features = false }
+rand = { version = "0.9.2", optional = true, features = ["thread_rng"], default-features = false }
+
+# GUI
+iced = { version = "0.13.1", optional = true, features = ["wgpu", "tiny-skia", "image", "tokio", "lazy"], default-features = false }
+image = { version = "0.25.8", optional = true, features = ["jpeg", "png"], default-features = false }
+
+# Applet
+ksni = { version = "0.3.1", optional = true, features = ["tokio"], default-features = false }
+resvg = { version = "0.45.1", optional = true, default-features = false }
+
+[features]
+default = []
+cli = ["dep:clap", "dep:serde", "dep:notify-rust", "tokio/fs", "tokio/rt-multi-thread", "dep:reqwest", "dep:chrono", "dep:rand"]
+gui = ["dep:clap", "dep:serde", "dep:notify-rust", "tokio/fs", "dep:iced", "dep:image"]
+applet = ["dep:ksni", "dep:resvg"]
+full = ["cli", "gui", "applet"]
+
+[[bin]]
+name = "apod-wallpaper"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "apod-wallpaper-switcher"
+path = "src/switcher.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "apod-wallpaper-applet"
+path = "src/applet.rs"
+required-features = ["applet"]
+
+[profile.release]
+strip = true
+lto = true
+panic = "abort"
