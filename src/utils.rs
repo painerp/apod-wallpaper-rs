@@ -45,14 +45,21 @@ pub fn get_cache_dir() -> Result<PathBuf> {
 #[cfg(any(feature = "cli", feature = "gui"))]
 pub fn get_config_dir() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
+        .or_else(|| {
+            std::env::var("HOME").ok().map(|home| {
+                PathBuf::from(home).join(".config")
+            })
+        })
         .map(|dir| dir.join(PathBuf::from("apodwallpaper")))
-        .ok_or_else(|| Error::DesktopEnv("Could not find config directory".to_string()));
-    if let Ok(ref dir) = config_dir {
-        if !dir.exists() {
-            create_dir(dir)?;
-        }
+        .ok_or_else(|| Error::DesktopEnv(
+            "Could not find config directory. Please set HOME or XDG_CONFIG_HOME environment variable.".to_string()
+        ))?;
+
+    if !config_dir.exists() {
+        create_dir(&config_dir)?;
     }
-    config_dir
+
+    Ok(config_dir)
 }
 
 #[cfg(any(feature = "cli", feature = "gui"))]

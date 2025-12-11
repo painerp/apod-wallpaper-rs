@@ -1,7 +1,7 @@
 use crate::utils::{get_cache_dir, get_config_dir};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, read_to_string, write};
+use std::fs::{read_to_string, write};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -27,11 +27,16 @@ fn default_theme() -> String {
 
 fn default_save_folder() -> PathBuf {
     dirs::picture_dir()
+        .or_else(|| {
+            std::env::var("HOME").ok().map(|home| {
+                PathBuf::from(home).join("Pictures")
+            })
+        })
         .unwrap_or_else(|| {
             get_cache_dir().unwrap_or_else(|_| {
                 panic!(
                     "{}",
-                    Error::Config("Could not find picture directory".to_string())
+                    Error::Config("Could not find picture directory. Please set HOME, XDG_PICTURES_DIR, or XDG_CACHE_HOME environment variable.".to_string())
                 )
             })
         })
@@ -54,8 +59,6 @@ impl Default for WallpaperConfig {
 impl WallpaperConfig {
     pub fn load_or_default() -> Result<Self> {
         let config_dir = get_config_dir()?;
-
-        create_dir_all(&config_dir)?;
         let config_path = config_dir.join(PathBuf::from("config.json"));
 
         if config_path.exists() {
@@ -72,12 +75,9 @@ impl WallpaperConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| Error::Config("Could not find config directory".to_string()))?
-            .join(PathBuf::from("apodwallpaper"));
-
-        create_dir_all(&config_dir)?;
+        let config_dir = get_config_dir()?;
         let config_path = config_dir.join(PathBuf::from("config.json"));
+
         let content =
             serde_json::to_string_pretty(self).map_err(|e| Error::Config(e.to_string()))?;
         write(&config_path, content)?;
