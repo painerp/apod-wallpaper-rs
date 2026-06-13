@@ -12,31 +12,37 @@ static WALLPAPER_TOOLS: OnceLock<WallpaperTools> = OnceLock::new();
 
 struct WallpaperTools {
     has_hyprpaper: bool,
-    has_swww: bool,
+    swww_bin: Option<&'static str>,
     has_swaybg: bool,
 }
 
 impl WallpaperTools {
     fn new() -> Self {
         let has_hyprpaper = command_exists("hyprpaper");
-        let has_swww = command_exists("swww");
+        let swww_bin = if command_exists("awww") {
+            Some("awww")
+        } else if command_exists("swww") {
+            Some("swww")
+        } else {
+            None
+        };
         let has_swaybg = command_exists("swaybg");
 
-        if !has_hyprpaper && !has_swww && !has_swaybg {
+        if !has_hyprpaper && swww_bin.is_none() && !has_swaybg {
             panic!(
-                "No supported wallpaper tool found. Please install one of hyprpaper, swww, or swaybg."
+                "No supported wallpaper tool found. Please install one of hyprpaper, awww/swww, or swaybg."
             );
         }
 
         Self {
             has_hyprpaper,
-            has_swww,
+            swww_bin,
             has_swaybg,
         }
     }
 
     fn has_any(&self) -> bool {
-        self.has_hyprpaper || self.has_swww || self.has_swaybg
+        self.has_hyprpaper || self.swww_bin.is_some() || self.has_swaybg
     }
 }
 
@@ -47,7 +53,7 @@ impl HyprlandManager {
         WALLPAPER_TOOLS.get_or_init(WallpaperTools::new);
         if !WALLPAPER_TOOLS.get().unwrap().has_any() {
             panic!(
-                "No supported wallpaper tool found. Please install one of hyprpaper, swww, or swaybg."
+                "No supported wallpaper tool found. Please install one of hyprpaper, awww/swww, or swaybg."
             );
         }
         Self {}
@@ -108,10 +114,10 @@ impl WallpaperManager for HyprlandManager {
             }
         }
 
-        if tools.has_swww {
+        if let Some(bin) = tools.swww_bin {
             let command = match screen {
-                Some(screen) => format!("swww img {} -o {} -t grow", path_str, screen),
-                None => format!("swww img {} -t grow", path_str),
+                Some(screen) => format!("{} img {} -o {} -t grow", bin, path_str, screen),
+                None => format!("{} img {} -t grow", bin, path_str),
             };
             let output = Command::new("sh").arg("-c").arg(command).output()?;
 
@@ -119,7 +125,8 @@ impl WallpaperManager for HyprlandManager {
                 return Ok(());
             } else {
                 eprintln!(
-                    "swww command failed: {}",
+                    "{} command failed: {}",
+                    bin,
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -138,7 +145,7 @@ impl WallpaperManager for HyprlandManager {
         }
 
         Err(Error::DesktopEnv(
-            "Failed to set wallpaper. No supported wallpaper tool (hyprpaper, swww, or swaybg) is available".to_string()
+            "Failed to set wallpaper. No supported wallpaper tool (hyprpaper, awww/swww, or swaybg) is available".to_string()
         ))
     }
 
@@ -164,8 +171,8 @@ impl WallpaperManager for HyprlandManager {
             }
         }
 
-        if tools.has_swww {
-            let output = Command::new("swww").arg("query").output()?;
+        if let Some(bin) = tools.swww_bin {
+            let output = Command::new(bin).arg("query").output()?;
 
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -192,7 +199,8 @@ impl WallpaperManager for HyprlandManager {
                 }
             } else {
                 eprintln!(
-                    "swww query command failed: {}",
+                    "{} query command failed: {}",
+                    bin,
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -203,7 +211,7 @@ impl WallpaperManager for HyprlandManager {
         }
 
         Err(Error::DesktopEnv(
-            "Failed to get wallpaper. No supported wallpaper tool (hyprpaper, swww, or swaybg) is available".to_string(),
+            "Failed to get wallpaper. No supported wallpaper tool (hyprpaper, awww/swww, or swaybg) is available".to_string(),
         ))
     }
 
