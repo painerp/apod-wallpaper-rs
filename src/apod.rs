@@ -8,27 +8,77 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// APOD moved from apod.nasa.gov to science.nasa.gov (Sep 2026); api.nasa.gov/planetary/apod
+// still scrapes the old site and now returns the NASA logo. Category 22766 = APOD posts.
+const APOD_POSTS_URL: &str = "https://science.nasa.gov/wp-json/wp/v2/image-article?categories=22766";
+
 #[derive(Debug, Deserialize)]
-struct ApodResponse {
-    date: String,
-    explanation: String,
-    #[serde(rename = "hdurl")]
-    hd_url: Option<String>,
-    url: Option<String>,
-    title: String,
-    media_type: String,
+struct Rendered {
+    rendered: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApodPost {
+    title: Rendered,
+    content: Rendered,
+    #[serde(default)]
+    featured_image: serde_json::Value,
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+
+    let mut decoded = String::new();
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find('&') {
+        decoded.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let entity = rest.find(';').and_then(|end| {
+            let c = match &rest[1..end] {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "nbsp" => ' ',
+                "hellip" => '…',
+                num => char::from_u32(num.strip_prefix('#')?.parse().ok()?)?,
+            };
+            Some((c, end + 1))
+        });
+        match entity {
+            Some((c, len)) => {
+                decoded.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                decoded.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    decoded.push_str(rest);
+
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub struct ApodClient {
     client: Client,
-    api_key: Option<String>,
 }
 
 impl ApodClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            api_key: std::env::var("NASA_API_KEY").ok(),
         }
     }
 
@@ -132,46 +182,46 @@ impl ApodClient {
         target_date: Option<NaiveDate>,
         random: bool,
     ) -> Result<Option<PathBuf>> {
-        let api_key = self.api_key.as_deref().unwrap_or("DEMO_KEY");
-        let mut url = format!("https://api.nasa.gov/planetary/apod?api_key={}", api_key);
-
-        if random {
-            url.push_str("&count=1");
-        } else if let Some(date) = target_date {
-            let formatted_date = date.format("%Y-%m-%d").to_string();
-            url.push_str(&format!("&date={}", formatted_date));
-        }
-
-        let response = self.client.get(&url).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            return if status.as_u16() == 403 {
-                Err(Error::Api(
-                    "API rate limit exceeded or invalid API key".to_string(),
-                ))
-            } else if status.as_u16() == 404 {
-                Ok(None)
-            } else {
-                Err(Error::Api(format!(
-                    "Failed to fetch APOD data: HTTP {}",
-                    response.status()
-                )))
-            };
-        }
-
-        let apod_data: Vec<ApodResponse> = if random {
-            response.json().await?
+        let date = if random {
+            let first = NaiveDate::from_ymd_opt(1995, 6, 16).unwrap();
+            let days = (Utc::now().naive_utc().date() - first).num_days();
+            first + chrono::Duration::days(rand::random_range(0..=days))
         } else {
-            vec![response.json().await?]
+            target_date.unwrap_or_else(|| Utc::now().naive_utc().date())
+        };
+        let date = date.format("%Y-%m-%d").to_string();
+
+        let url = format!(
+            "{}&after={}T00:00:00&before={}T23:59:59",
+            APOD_POSTS_URL, date, date
+        );
+        let posts: Vec<ApodPost> = self
+            .client
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let Some(apod) = posts.first() else {
+            return Ok(None);
+        };
+        let Some(image_url) = apod.featured_image.get("file").and_then(|f| f.as_str()) else {
+            return Ok(None);
         };
 
-        if apod_data.is_empty() || apod_data[0].media_type != "image" {
-            return Ok(None);
-        }
+        // "APOD: 2026 October 14 – Mars and the Beehive" -> "Mars and the Beehive"
+        let title = html_to_text(&apod.title.rendered);
+        let title = title.split_once(" – ").map_or(title.as_str(), |(_, t)| t);
+        let explanation = apod
+            .content
+            .rendered
+            .split_once("Explanation:")
+            .map_or("", |(_, rest)| rest);
+        let explanation = explanation.split("<br").next().unwrap_or_default();
+        let explanation = html_to_text(explanation.split("</p>").next().unwrap_or_default());
 
-        let apod = &apod_data[0];
-        let image_url = apod.hd_url.as_ref().unwrap_or(apod.url.as_ref().unwrap());
         let image_ext =
             if let Some(ext) = Path::new(image_url).extension().and_then(|e| e.to_str()) {
                 ext
@@ -187,15 +237,24 @@ impl ApodClient {
             )));
         }
 
-        let file_name = format!("{}.{}", apod.date, image_ext);
+        let file_name = format!("{}.{}", date, image_ext);
         let file_path = folder.join(file_name);
 
-        let image_response = self.client.get(image_url).send().await?;
+        // A cached non-image (e.g. an HTML error page) would block re-downloading that date forever.
+        let image_response = self.client.get(image_url).send().await?.error_for_status()?;
+        let is_image = image_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("image/"));
+        if !is_image {
+            return Err(Error::Api(format!("Not an image: {}", image_url)));
+        }
         let image_bytes = image_response.bytes().await?;
 
         fs::write(&file_path, image_bytes)?;
 
-        if let Err(e) = self.add_exif_metadata(&file_path, &apod.title, &apod.explanation) {
+        if let Err(e) = self.add_exif_metadata(&file_path, &title, &explanation) {
             eprintln!("Warning: Failed to add EXIF metadata: {}", e);
         }
 
@@ -391,5 +450,18 @@ impl ApodClient {
         }
 
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::html_to_text;
+
+    #[test]
+    fn strips_tags_and_decodes_entities() {
+        assert_eq!(
+            html_to_text("</strong>In <a href=\"x\">today&#8217;s</a>\n\t image &amp; &lt;M44&gt;&nbsp;R&D &bogus;"),
+            "In today’s image & <M44> R&D &bogus;"
+        );
     }
 }
